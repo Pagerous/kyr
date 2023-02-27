@@ -5,6 +5,7 @@ import click
 
 from kyr.config import Config
 from kyr.service import commands
+from kyr.service.pull.host import GitHub
 
 
 def coroutine(f):
@@ -19,7 +20,7 @@ def coroutine(f):
 @click.option("-g", "--git-host", type=click.Choice(["github"]), default="github")
 @click.pass_context
 def pull(ctx: click.Context, git_host):
-    ctx.obj["GIT_HOST"] = git_host
+    ctx.obj["GIT_HOST"] = GitHub(Config.get("github.token"))
 
 
 @pull.command()
@@ -29,7 +30,6 @@ def org(ctx: click.Context, org_name):
     commands.pull_organization_data(
         git_host=ctx.obj.get("GIT_HOST"),
         org_name=org_name,
-        github_token=Config.get("github.token"),
     )
 
 
@@ -43,5 +43,4 @@ async def repos(ctx: click.Context, org_name: str, repo_names):
         git_host=ctx.obj.get("GIT_HOST"),
         org_name=org_name,
         repo_names=repo_names,
-        github_token=Config.get("github.token"),
     )
