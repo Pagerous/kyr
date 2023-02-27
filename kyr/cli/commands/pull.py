@@ -1,10 +1,13 @@
 import asyncio
 from functools import update_wrapper
+from typing import Iterable
 
 import click
 
 from kyr.config import Config
 from kyr.service import commands
+from kyr.service import events
+from kyr.service import events as service_events
 from kyr.service.pull.host import GitHub
 
 
@@ -16,10 +19,47 @@ def coroutine(f):
     return update_wrapper(wrapper, f)
 
 
+def dispatch_events(events: Iterable[events.Event]):
+    for event_ in events:
+        if isinstance(event_, service_events.OrganizationPulled):
+            click.secho(
+                f"{event_.git_host.upper()}: Pulled '{event_.org_name}'",
+                fg="green",
+            )
+        elif isinstance(event_, service_events.OrganizationUpdated):
+            click.secho(
+                f"{event_.git_host.upper()}: Updated '{event_.org_name}'",
+                fg="green",
+            )
+        elif isinstance(event_, service_events.ReposPulled):
+            click.secho(
+                f"{event_.git_host.upper()}: Pulled {len(event_.repo_names)} "
+                f"repos for '{event_.org_name}'",
+                fg="green",
+            )
+        elif isinstance(event_, service_events.ReposRemoved):
+            click.secho(
+                f"{event_.git_host.upper()}: Removed {len(event_.repo_names)} "
+                f"repos for '{event_.org_name}'",
+                fg="yellow",
+            )
+        elif isinstance(event_, service_events.ReposUpdated):
+            click.secho(
+                f"{event_.git_host.upper()}: Updated {len(event_.repo_names)} "
+                f"repos for '{event_.org_name}'",
+                fg="green",
+            )
+        elif isinstance(event_, service_events.ReposNotFound):
+            click.secho(
+                f"{event_.git_host.upper()}: Repos {list(event_.repo_names)} "
+                f"for '{event_.org_name}' were not found",
+                fg="yellow",
+            )
+
+
 @click.group()
-@click.option("-g", "--git-host", type=click.Choice(["github"]), default="github")
 @click.pass_context
-def pull(ctx: click.Context, git_host):
+def pull(ctx: click.Context):
     ctx.obj["GIT_HOST"] = GitHub(Config.get("github.token"))
 
 
@@ -27,10 +67,11 @@ def pull(ctx: click.Context, git_host):
 @click.argument("org-name")
 @click.pass_context
 def org(ctx: click.Context, org_name):
-    commands.pull_organization_data(
+    events = commands.pull_organization_data(
         git_host=ctx.obj.get("GIT_HOST"),
         org_name=org_name,
     )
+    dispatch_events(events)
 
 
 @pull.command()
@@ -39,8 +80,9 @@ def org(ctx: click.Context, org_name):
 @click.argument("repo_names", nargs=-1)
 @click.pass_context
 async def repos(ctx: click.Context, org_name: str, repo_names):
-    await commands.pull_repos_data(
+    events = await commands.pull_repos_data(
         git_host=ctx.obj.get("GIT_HOST"),
         org_name=org_name,
         repo_names=repo_names,
     )
+    dispatch_events(events)

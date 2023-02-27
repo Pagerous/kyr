@@ -37,7 +37,7 @@ class Organization(Base):
         cascade="all, delete-orphan",
         foreign_keys="[Repo.org_name, Repo.git_host]",
     )
-    
+
     @property
     def repos_count(self):
         return self.private_repos + self.public_repos
@@ -48,9 +48,13 @@ class Repo(Base):
 
     name: Mapped[str] = mapped_column(String(256), primary_key=True)
     org_name: Mapped[str] = mapped_column(ForeignKey("organization.name"))
-    git_host: Mapped[GitHost] = mapped_column(ForeignKey("organization.git_host"))
+    git_host: Mapped[GitHost] = mapped_column(
+        ForeignKey("organization.git_host")
+    )
     org = relationship(
-        "Organization", back_populates="repos", foreign_keys=[org_name, git_host]
+        "Organization",
+        back_populates="repos",
+        foreign_keys=[org_name, git_host],
     )
     created_at: Mapped[datetime] = mapped_column()
     updated_at: Mapped[datetime] = mapped_column()

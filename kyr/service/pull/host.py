@@ -12,20 +12,24 @@ from kyr.service.pull.schemas import OrganizationSchema, RepoSchema
 
 class GitHost(abc.ABC):
     NAME = "git_host"
-    
+
     @abc.abstractmethod
     def get_organization_data(self, org_name: str) -> OrganizationSchema:
         pass
-    
+
     @abc.abstractmethod
     async def get_all_repos_data(
-        self, org_name: str, repos_count: int,
+        self,
+        org_name: str,
+        repos_count: int,
     ) -> dict[str, RepoSchema]:
-        pass 
-    
+        pass
+
     @abc.abstractmethod
     async def get_repos_data_by_name(
-        self, org_name: str, repo_names: Iterable[str],
+        self,
+        org_name: str,
+        repo_names: Iterable[str],
     ) -> dict[str, RepoSchema | None]:
         pass
 
@@ -33,30 +37,25 @@ class GitHost(abc.ABC):
 class GitHub(GitHost):
     NAME = "github"
     BASE_URL = "https://api.github.com"
-    
+
     def __init__(self, token: str):
         self._token = token
-        
 
     def _get_headers(self):
         return {"Authorization": f"Bearer {self._token}"}
-    
+
     @classmethod
     def _get_url(cls, url):
         return f"{cls.BASE_URL}/{url}"
 
-
-    def get_organization_data(
-        self, org_name: str
-    ) -> OrganizationSchema:
+    def get_organization_data(self, org_name: str) -> OrganizationSchema:
         response = requests.get(
-            url=self._get_url(f"orgs/{org_name}"),
-            headers=self._get_headers()
+            url=self._get_url(f"orgs/{org_name}"), headers=self._get_headers()
         )
         if response.status_code != 200:
             raise PullError(
                 f"failed to pull '{org_name}' data for",
-                error_code=response.status_code
+                error_code=response.status_code,
             )
         data = response.json()
         return {
@@ -66,9 +65,10 @@ class GitHub(GitHost):
             "public_repos": data["public_repos"],
         }
 
-
     async def get_all_repos_data(
-        self, org_name: str, repos_count: int,
+        self,
+        org_name: str,
+        repos_count: int,
     ) -> dict[str, RepoSchema]:
         result = []
         async with aiohttp.ClientSession() as session:
@@ -99,11 +99,10 @@ class GitHub(GitHost):
                 "updated_at": datetime.fromisoformat(response["updated_at"]),
                 "html_url": response["html_url"],
                 "api_url": response["url"],
-            } 
+            }
             for repo_name, response in result
         }
-        
-        
+
     async def get_repos_data_by_name(
         self,
         org_name,
@@ -130,21 +129,23 @@ class GitHub(GitHost):
                 "updated_at": datetime.fromisoformat(response["updated_at"]),
                 "html_url": response["html_url"],
                 "api_url": response["url"],
-            } if response is not None else None
+            }
+            if response is not None
+            else None
             for repo_name, response in result
         }
 
-
-
     async def _get_repos_data(
-        self, session, org_name: str, page: int,
+        self,
+        session,
+        org_name: str,
+        page: int,
     ) -> list[dict]:
         async with session.get(
             self._get_url(f"orgs/{org_name}/repos?page={page}&per_page=100"),
             headers=self._get_headers(),
         ) as response:
             return await response.json()
-
 
     async def _get_repo_data(
         self, session, org_name: str, repo_name: str
