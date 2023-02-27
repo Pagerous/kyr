@@ -1,25 +1,19 @@
 from typing import Iterable
 
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import and_, delete, insert, update
 
 from kyr.infrastructure.db import models
 from kyr.infrastructure.db.session import get_session
-from kyr.service.exceptions import GitHostException, MissingDataError
-from kyr.service.pull.host import github
+from kyr.service.exceptions import MissingDataError
+from kyr.service.pull.host import GitHost
 
 
-def _validate_git_host(git_host: str):
-    if git_host not in models.GitHost.values():
-        raise GitHostException(f"unknown git host '{git_host}'")
-
-
-def pull_organization_data(git_host: str, org_name: str, github_token: str):
-    if git_host == models.GitHost.GITHUB:
-        data = github.get_organization_data(
-            org_name=org_name, github_token=github_token
-        )
-    else:
-        raise GitHostException(f"unknown git host '{git_host}'")
+def pull_organization_data(
+    git_host: GitHost, org_name: str, github_token: str
+):
+    data = git_host.get_organization_data(
+        org_name=org_name, github_token=github_token
+    )
     with get_session() as session:
         organization = session.get(
             models.Organization, (data["name"], data["git_host"])
@@ -39,30 +33,85 @@ def pull_organization_data(git_host: str, org_name: str, github_token: str):
 
 
 async def pull_repos_data(
-    git_host: str, org_name: str, github_token: str, repo_names: Iterable[str]
+    git_host: GitHost, org_name: str, repo_names: Iterable[str]
 ):
-    _validate_git_host(git_host)
     with get_session() as session:
-        organization = session.get(models.Organization, (org_name, git_host))
+        organization = session.get(
+            models.Organization, (org_name, git_host.NAME)
+        )
         if organization is None:
             raise MissingDataError(
-                f"unknown organization '{org_name}', pull it first before continuing"
+                f"unknown organization '{org_name}', "
+                "pull it first before continuing"
             )
-        if git_host == models.GitHost.GITHUB:
-            data = await github.get_repos_data(
+        
+        if not repo_names:
+            data = await git_host.get_all_repos_data(
                 org_name=org_name,
-                github_token=github_token,
-                repo_names=repo_names,
-                repos_count=organization.private_repos + organization.public_repos,
+                repos_count=organization.repos_count,
             )
+            repo_names_to_remove = {
+                repo_name for repo_name in organization.repos
+                if repo_name not in data
+            }
+            repo_names_to_update = {
+                repo_name for repo_name in organization.repos
+                if repo_name in data
+            }
+            repo_names_to_insert = {
+                repo_name for repo_name in data
+                if repo_name not in repo_names_to_update
+            }
         else:
-            raise GitHostException(f"unknown git host '{git_host}'")
-        session.execute(
-            insert(models.Repo)
-            .values(data)
-            .on_conflict_do_update(
-                index_elements=models.Repo.primary_keys(),
-                set_=models.Repo.update_columns(),
+            data = await git_host.get_repos_data_by_name(
+                org_name=org_name,
+                repo_names=repo_names
             )
-        )
+            repo_names_to_remove = {
+                repo_name for repo_name in organization.repos
+                if data.get(repo_name) is None
+            }
+            repo_names_to_update = {
+                repo_name for repo_name in organization.repos
+                if data.get(repo_name) is not None
+            }
+            repo_names_to_insert = {
+                repo_name for repo_name, data_item in data.items()
+                if data_item is not None 
+                and repo_name not in repo_names_to_update
+            }
+
+        if repo_names_to_remove:
+            session.execute(
+                delete(models.Repo).where(
+                    and_(
+                        models.Repo.name.in_(repo_names_to_remove),
+                        models.Repo.org_name == org_name,
+                        models.Repo.git_host == git_host.NAME
+                    )
+                )
+            )
+        if repo_names_to_update:
+            session.execute(
+                update(models.Repo),
+                [
+                    {
+                        "name": data_item["name"],
+                        "org_name": data_item["org_name"],
+                        "git_host": data_item["git_host"],
+                        "updated_at": data_item["updated_at"],
+                        "html_url": data_item["html_url"],
+                        "api_url": data_item["api_url"]
+                    }
+                    for data_item in [
+                        data.get(repo_name) 
+                        for repo_name in repo_names_to_update
+                    ]
+                ],
+            )
+        if repo_names_to_insert:
+            session.execute(
+                insert(models.Repo),
+                [data.get(repo_name) for repo_name in repo_names_to_insert],
+            )
         session.commit()

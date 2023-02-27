@@ -4,7 +4,13 @@ from typing import List
 
 from sqlalchemy import Enum, ForeignKey, ForeignKeyConstraint, String
 from sqlalchemy.inspection import inspect
-from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
+from sqlalchemy.orm import (
+    Mapped,
+    attribute_mapped_collection,
+    declarative_base,
+    mapped_column,
+    relationship,
+)
 
 Base = declarative_base()
 
@@ -24,12 +30,17 @@ class Organization(Base):
     git_host: Mapped[GitHost] = mapped_column(Enum(GitHost), primary_key=True)
     private_repos: Mapped[int] = mapped_column()
     public_repos: Mapped[int] = mapped_column()
-    repos: Mapped[List["Repo"]] = relationship(
+    repos: Mapped[dict[str, "Repo"]] = relationship(
         "Repo",
         back_populates="org",
+        collection_class=attribute_mapped_collection("name"),
         cascade="all, delete-orphan",
         foreign_keys="[Repo.org_name, Repo.git_host]",
     )
+    
+    @property
+    def repos_count(self):
+        return self.private_repos + self.public_repos
 
 
 class Repo(Base):
@@ -51,16 +62,3 @@ class Repo(Base):
             [org_name, git_host], [Organization.name, Organization.git_host]
         ),
     )
-
-    @classmethod
-    def primary_keys(cls):
-        return [key.name for key in inspect(cls).primary_key]
-
-    @classmethod
-    def update_columns(cls):
-        mapper = inspect(cls)
-        return {
-            "updated_at": mapper.c.updated_at,
-            "html_url": mapper.c.html_url,
-            "api_url": mapper.c.api_url,
-        }
