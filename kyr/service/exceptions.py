@@ -1,5 +1,3 @@
-
-
 class PullError(Exception):
     def __init__(self, msg, error_code):
         super().__init__(msg)

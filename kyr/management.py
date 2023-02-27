@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 PROJECT_DIRECTORY = Path.home().joinpath(".kyr/")
 
 

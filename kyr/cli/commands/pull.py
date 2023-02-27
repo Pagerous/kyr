@@ -29,7 +29,7 @@ def org(ctx: click.Context, org_name):
     commands.pull_organization_data(
         git_host=ctx.obj.get("GIT_HOST"),
         org_name=org_name,
-        github_token=Config.get("github.token")
+        github_token=Config.get("github.token"),
     )
 
 
@@ -43,5 +43,5 @@ async def repos(ctx: click.Context, org_name: str, repo_names):
         git_host=ctx.obj.get("GIT_HOST"),
         org_name=org_name,
         repo_names=repo_names,
-        github_token=Config.get("github.token")
+        github_token=Config.get("github.token"),
     )

@@ -4,8 +4,7 @@ from typing import List
 
 from sqlalchemy import Enum, ForeignKey, ForeignKeyConstraint, String
 from sqlalchemy.inspection import inspect
-from sqlalchemy.orm import declarative_base, relationship, Mapped, mapped_column
-
+from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 
 Base = declarative_base()
 
@@ -29,7 +28,7 @@ class Organization(Base):
         "Repo",
         back_populates="org",
         cascade="all, delete-orphan",
-        foreign_keys="[Repo.org_name, Repo.git_host]"
+        foreign_keys="[Repo.org_name, Repo.git_host]",
     )
 
 
@@ -48,7 +47,9 @@ class Repo(Base):
     api_url: Mapped[str] = mapped_column(String(512))
 
     __table_args__ = (
-        ForeignKeyConstraint([org_name, git_host], [Organization.name, Organization.git_host]),
+        ForeignKeyConstraint(
+            [org_name, git_host], [Organization.name, Organization.git_host]
+        ),
     )
 
     @classmethod
@@ -61,5 +62,5 @@ class Repo(Base):
         return {
             "updated_at": mapper.c.updated_at,
             "html_url": mapper.c.html_url,
-            "api_url": mapper.c.api_url
+            "api_url": mapper.c.api_url,
         }

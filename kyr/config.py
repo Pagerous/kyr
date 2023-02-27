@@ -33,7 +33,9 @@ class Config:
         return value or default
 
     @staticmethod
-    def _get_inner_config(config: dict, key_components: Sequence[str], default: Any) -> Any:
+    def _get_inner_config(
+        config: dict, key_components: Sequence[str], default: Any
+    ) -> Any:
         if len(key_components) == 0:
             return config
         for key_component in key_components:
