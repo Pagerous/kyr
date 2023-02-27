@@ -1,3 +1,6 @@
 .python-version
 .venv
 .idea
+__pycache__
+*.pyc
+.vscode
