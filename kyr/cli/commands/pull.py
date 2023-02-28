@@ -55,6 +55,20 @@ def dispatch_events(events: Iterable[events.Event]):
                 f"for '{event_.org_name}' were not found",
                 fg="yellow",
             )
+        elif isinstance(event_, service_events.ReposAccessForbidden):
+            click.secho(
+                f"{event_.git_host.upper()}: Access for repos "
+                f"{list(event_.repo_names)} for '{event_.org_name}' "
+                "is forbidden. Ensure your access is still valid.",
+                fg="red",
+            )
+        elif isinstance(event_, service_events.ReposListAccessForbidden):
+            click.secho(
+                f"{event_.git_host.upper()}: Access for repos listing for "
+                f"'{event_.org_name}' is forbidden. Ensure your access is "
+                "still valid.",
+                fg="red",
+            )
 
 
 @click.group()
@@ -80,9 +94,17 @@ def org(ctx: click.Context, org_name):
 @click.argument("repo_names", nargs=-1)
 @click.pass_context
 async def repos(ctx: click.Context, org_name: str, repo_names):
-    events = await commands.pull_repos_data(
-        git_host=ctx.obj.get("GIT_HOST"),
-        org_name=org_name,
-        repo_names=repo_names,
+    dispatch_events(
+        await commands.pull_repos_data(
+            git_host=ctx.obj.get("GIT_HOST"),
+            org_name=org_name,
+            repo_names=repo_names,
+        )
     )
-    dispatch_events(events)
+    dispatch_events(
+        await commands.pull_repo_dependencies(
+            git_host=ctx.obj.get("GIT_HOST"),
+            org_name=org_name,
+            repo_names=repo_names,
+        )
+    )

@@ -1,12 +1,13 @@
 import abc
 import asyncio
+import base64
+from collections import defaultdict
 from datetime import datetime
 from typing import Iterable
 
 import aiohttp
 import requests
 
-from kyr.service.exceptions import PullError
 from kyr.service.pull.schemas import OrganizationSchema, RepoSchema
 
 
@@ -32,7 +33,16 @@ class GitHost(abc.ABC):
         repo_names: Iterable[str],
     ) -> dict[str, RepoSchema | None]:
         pass
-
+    
+    @abc.abstractmethod
+    async def get_files_from_repos(
+        self,
+        org_name: str,
+        repo_names: Iterable[str],
+        file_paths: Iterable[str]
+    ) -> dict[dict]:
+        pass
+    
 
 class GitHub(GitHost):
     NAME = "github"
@@ -53,24 +63,24 @@ class GitHub(GitHost):
             url=self._get_url(f"orgs/{org_name}"), headers=self._get_headers()
         )
         if response.status_code != 200:
-            raise PullError(
-                f"failed to pull '{org_name}' data for",
-                error_code=response.status_code,
-            )
-        data = response.json()
-        return {
-            "name": data["login"],
-            "git_host": "github",
-            "private_repos": data["total_private_repos"],
-            "public_repos": data["public_repos"],
-        }
+            data = None
+        else:
+            data = response.json()
+            data = {
+                "name": data["login"],
+                "git_host": "github",
+                "private_repos": data["total_private_repos"],
+                "public_repos": data["public_repos"],
+            }
+        return data, response.status_code
 
     async def get_all_repos_data(
         self,
         org_name: str,
         repos_count: int,
-    ) -> dict[str, RepoSchema]:
+    ) -> tuple[dict[str, RepoSchema], bool]:
         result = []
+        forbidden = False
         async with aiohttp.ClientSession() as session:
             tasks = []
             last_page = int(repos_count / 100)
@@ -82,32 +92,38 @@ class GitHub(GitHost):
                     )
                 )
             task_results = await asyncio.gather(*tasks)
-            for task_result in task_results:
-                if len(task_result) > 0:
+            for response, status_code in task_results:
+                if status_code == 200 and len(response) > 0:
                     result.extend(
                         [
-                            (response["name"], response)
-                            for response in task_result
+                            (item["name"], item)
+                            for item in response
                         ]
                     )
+                elif status_code == 403:
+                    forbidden = True
         return {
             repo_name: {
                 "name": response["name"],
                 "org_name": org_name,
                 "git_host": "github",
-                "created_at": datetime.fromisoformat(response["created_at"]),
-                "updated_at": datetime.fromisoformat(response["updated_at"]),
+                "created_at": datetime.fromisoformat(
+                    response["created_at"]
+                ).replace(tzinfo=None),
+                "updated_at": datetime.fromisoformat(
+                    response["updated_at"]
+                ).replace(tzinfo=None),
                 "html_url": response["html_url"],
                 "api_url": response["url"],
             }
             for repo_name, response in result
-        }
+        }, forbidden
 
     async def get_repos_data_by_name(
         self,
         org_name,
         repo_names: Iterable[str],
-    ) -> dict[str, RepoSchema | None]:
+    ) -> dict[str, tuple[RepoSchema | None, int]]:
         result = []
         async with aiohttp.ClientSession() as session:
             tasks = []
@@ -118,21 +134,28 @@ class GitHub(GitHost):
                     )
                 )
             task_results = await asyncio.gather(*tasks)
-            for repo_name, response in zip(repo_names, task_results):
-                result.append((repo_name, response))
+            for response, status_code, repo_name in task_results:
+                result.append((repo_name, status_code, response))
         return {
-            repo_name: {
-                "name": response["name"],
-                "org_name": org_name,
-                "git_host": "github",
-                "created_at": datetime.fromisoformat(response["created_at"]),
-                "updated_at": datetime.fromisoformat(response["updated_at"]),
-                "html_url": response["html_url"],
-                "api_url": response["url"],
-            }
+            repo_name: (
+                {
+                    "name": response["name"],
+                    "org_name": org_name,
+                    "git_host": "github",
+                    "created_at": datetime.fromisoformat(
+                        response["created_at"]
+                    ).replace(tzinfo=None),
+                    "updated_at": datetime.fromisoformat(
+                        response["updated_at"]
+                    ).replace(tzinfo=None),
+                    "html_url": response["html_url"],
+                    "api_url": response["url"],
+                },
+                status_code
+            )
             if response is not None
-            else None
-            for repo_name, response in result
+            else (None, status_code)
+            for repo_name, status_code, response in result
         }
 
     async def _get_repos_data(
@@ -145,15 +168,67 @@ class GitHub(GitHost):
             self._get_url(f"orgs/{org_name}/repos?page={page}&per_page=100"),
             headers=self._get_headers(),
         ) as response:
-            return await response.json()
+            if response.status != 200:
+                data = None
+            else:
+                data = await response.json()
+            return data, response.status
 
     async def _get_repo_data(
         self, session, org_name: str, repo_name: str
-    ) -> dict | None:
+    ) -> tuple[dict | None, int, str]:
         async with session.get(
             self._get_url(f"repos/{org_name}/{repo_name}"),
             headers=self._get_headers(),
         ) as response:
             if response.status != 200:
-                return None
-            return await response.json()
+                data = None
+            else:
+                data = await response.json()
+            return data, response.status, repo_name
+
+    async def get_files_from_repos(
+        self,
+        org_name: str,
+        repo_names: Iterable[str],
+        file_paths: Iterable[str]
+    ) -> dict[dict]:
+        result = defaultdict(dict)
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for repo_name in repo_names:
+                for file_path in file_paths:
+                    tasks.append(
+                        asyncio.create_task(
+                            self._get_file_from_repo(
+                                session,
+                                org_name=org_name,
+                                repo_name=repo_name,
+                                file_path=file_path
+                            )
+                        )
+                    )
+            task_results = await asyncio.gather(*tasks)
+            for content, status_code, repo_name, file_path in task_results:
+                result[file_path][repo_name] = (content, status_code)
+        return result
+    
+    async def _get_file_from_repo(
+        self,
+        session,
+        org_name: str,
+        repo_name: str,
+        file_path: str
+    ) -> tuple[bytes | None, int, str, str]:
+        async with session.get(
+            self._get_url(
+                f"repos/{org_name}/{repo_name}/contents/{file_path}"
+            ),
+            headers=self._get_headers(),
+        ) as response:
+            if response.status != 200:
+                content = None
+            else:
+                body = await response.json()
+                content = base64.b64decode(body["content"])
+            return content, response.status, repo_name, file_path

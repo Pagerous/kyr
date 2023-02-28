@@ -16,6 +16,12 @@ class OrganizationPulled(Event):
 class OrganizationUpdated(Event):
     org_name: str
     git_host: str
+    
+    
+@dataclass
+class OrganizationAccessForbidden(Event):
+    org_name: str
+    git_host: str
 
 
 @dataclass
@@ -41,6 +47,19 @@ class ReposRemoved(Event):
 
 @dataclass
 class ReposNotFound(Event):
+    repo_names: list[str]
+    org_name: str
+    git_host: str
+
+
+@dataclass
+class ReposListAccessForbidden(Event):
+    org_name: str
+    git_host: str
+
+
+@dataclass
+class ReposAccessForbidden(Event):
     repo_names: list[str]
     org_name: str
     git_host: str
