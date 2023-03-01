@@ -19,55 +19,66 @@ def coroutine(f):
     return update_wrapper(wrapper, f)
 
 
-def dispatch_events(events: Iterable[events.Event]):
+async def dispatch_events(events: Iterable[events.Event]):
     for event_ in events:
-        if isinstance(event_, service_events.OrganizationPulled):
+        if isinstance(event_, service_events.OrganizationUpdated):
             click.secho(
-                f"{event_.git_host.upper()}: Pulled '{event_.org_name}'",
-                fg="green",
-            )
-        elif isinstance(event_, service_events.OrganizationUpdated):
-            click.secho(
-                f"{event_.git_host.upper()}: Updated '{event_.org_name}'",
-                fg="green",
-            )
-        elif isinstance(event_, service_events.ReposPulled):
-            click.secho(
-                f"{event_.git_host.upper()}: Pulled {len(event_.repo_names)} "
-                f"repos for '{event_.org_name}'",
+                f"{event_.git_host.NAME.upper()}: Updated '{event_.org_name}'",
                 fg="green",
             )
         elif isinstance(event_, service_events.ReposRemoved):
             click.secho(
-                f"{event_.git_host.upper()}: Removed {len(event_.repo_names)} "
-                f"repos for '{event_.org_name}'",
+                f"{event_.git_host.NAME.upper()}: Removed "
+                f"{len(event_.repo_names)} repos in '{event_.org_name}'",
                 fg="yellow",
             )
         elif isinstance(event_, service_events.ReposUpdated):
             click.secho(
-                f"{event_.git_host.upper()}: Updated {len(event_.repo_names)} "
-                f"repos for '{event_.org_name}'",
+                f"{event_.git_host.NAME.upper()}: Updated "
+                f"{len(event_.repo_names)} repos in '{event_.org_name}'",
                 fg="green",
+            )
+            await dispatch_events(
+                await commands.pull_repo_dependencies(
+                    git_host=event_.git_host,
+                    org_name=event_.org_name,
+                    repo_names=event_.repo_names,
+                )
             )
         elif isinstance(event_, service_events.ReposNotFound):
             click.secho(
-                f"{event_.git_host.upper()}: Repos {list(event_.repo_names)} "
-                f"for '{event_.org_name}' were not found",
+                f"{event_.git_host.NAME.upper()}: Repos "
+                f"{list(event_.repo_names)} in '{event_.org_name}' were not "
+                "found",
                 fg="yellow",
             )
         elif isinstance(event_, service_events.ReposAccessForbidden):
             click.secho(
-                f"{event_.git_host.upper()}: Access for repos "
-                f"{list(event_.repo_names)} for '{event_.org_name}' "
+                f"{event_.git_host.NAME.upper()}: Access in repos "
+                f"{list(event_.repo_names)} in '{event_.org_name}' "
                 "is forbidden. Ensure your access is still valid.",
                 fg="red",
             )
         elif isinstance(event_, service_events.ReposListAccessForbidden):
             click.secho(
-                f"{event_.git_host.upper()}: Access for repos listing for "
+                f"{event_.git_host.NAME.upper()}: Access for repos listing in "
                 f"'{event_.org_name}' is forbidden. Ensure your access is "
                 "still valid.",
                 fg="red",
+            )
+        elif isinstance(event_, service_events.ReposFileAccessForbidden):
+            click.secho(
+                f"{event_.git_host.NAME.upper()}: Access for file "
+                f"'{event_.file_path}' in repos {list(event_.repo_names)} "
+                f"in '{event_.org_name}' is forbidden. Ensure your access is "
+                f"still valid.",
+                fg="red",
+            )
+        elif isinstance(event_, service_events.ReposDependenciesUpdated):
+            click.secho(
+                f"{event_.git_host.NAME.upper()}: Updated dependencies in "
+                f"{len(event_.repo_names)} repos in '{event_.org_name}'",
+                fg="green",
             )
 
 
@@ -78,14 +89,16 @@ def pull(ctx: click.Context):
 
 
 @pull.command()
+@coroutine
 @click.argument("org-name")
 @click.pass_context
-def org(ctx: click.Context, org_name):
-    events = commands.pull_organization_data(
-        git_host=ctx.obj.get("GIT_HOST"),
-        org_name=org_name,
+async def org(ctx: click.Context, org_name):
+    await dispatch_events(
+        commands.pull_organization_data(
+            git_host=ctx.obj.get("GIT_HOST"),
+            org_name=org_name,
+        )
     )
-    dispatch_events(events)
 
 
 @pull.command()
@@ -94,15 +107,8 @@ def org(ctx: click.Context, org_name):
 @click.argument("repo_names", nargs=-1)
 @click.pass_context
 async def repos(ctx: click.Context, org_name: str, repo_names):
-    dispatch_events(
+    await dispatch_events(
         await commands.pull_repos_data(
-            git_host=ctx.obj.get("GIT_HOST"),
-            org_name=org_name,
-            repo_names=repo_names,
-        )
-    )
-    dispatch_events(
-        await commands.pull_repo_dependencies(
             git_host=ctx.obj.get("GIT_HOST"),
             org_name=org_name,
             repo_names=repo_names,

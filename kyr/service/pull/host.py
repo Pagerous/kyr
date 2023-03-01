@@ -33,16 +33,16 @@ class GitHost(abc.ABC):
         repo_names: Iterable[str],
     ) -> dict[str, RepoSchema | None]:
         pass
-    
+
     @abc.abstractmethod
     async def get_files_from_repos(
         self,
         org_name: str,
         repo_names: Iterable[str],
-        file_paths: Iterable[str]
+        file_paths: Iterable[str],
     ) -> dict[dict]:
         pass
-    
+
 
 class GitHub(GitHost):
     NAME = "github"
@@ -94,12 +94,7 @@ class GitHub(GitHost):
             task_results = await asyncio.gather(*tasks)
             for response, status_code in task_results:
                 if status_code == 200 and len(response) > 0:
-                    result.extend(
-                        [
-                            (item["name"], item)
-                            for item in response
-                        ]
-                    )
+                    result.extend([(item["name"], item) for item in response])
                 elif status_code == 403:
                     forbidden = True
         return {
@@ -151,7 +146,7 @@ class GitHub(GitHost):
                     "html_url": response["html_url"],
                     "api_url": response["url"],
                 },
-                status_code
+                status_code,
             )
             if response is not None
             else (None, status_code)
@@ -191,7 +186,7 @@ class GitHub(GitHost):
         self,
         org_name: str,
         repo_names: Iterable[str],
-        file_paths: Iterable[str]
+        file_paths: Iterable[str],
     ) -> dict[dict]:
         result = defaultdict(dict)
         async with aiohttp.ClientSession() as session:
@@ -204,7 +199,7 @@ class GitHub(GitHost):
                                 session,
                                 org_name=org_name,
                                 repo_name=repo_name,
-                                file_path=file_path
+                                file_path=file_path,
                             )
                         )
                     )
@@ -212,13 +207,9 @@ class GitHub(GitHost):
             for content, status_code, repo_name, file_path in task_results:
                 result[file_path][repo_name] = (content, status_code)
         return result
-    
+
     async def _get_file_from_repo(
-        self,
-        session,
-        org_name: str,
-        repo_name: str,
-        file_path: str
+        self, session, org_name: str, repo_name: str, file_path: str
     ) -> tuple[bytes | None, int, str, str]:
         async with session.get(
             self._get_url(

@@ -6,6 +6,7 @@ from kyr.infrastructure.db import models
 from kyr.infrastructure.db.session import get_session
 from kyr.service import events
 from kyr.service.exceptions import MissingDataError
+from kyr.service.parsers import PoetryLockParser
 from kyr.service.pull.host import GitHost
 
 
@@ -31,16 +32,11 @@ def pull_organization_data(
     else:
         with get_session() as session:
             organization = _get_organization(
-                session,
-                org_name=data["name"],
-                git_host=data["git_host"]
+                session, org_name=data["name"], git_host=data["git_host"]
             )
             if organization is not None:
                 organization.private_repos = data["private_repos"]
                 organization.public_repos = data["public_repos"]
-                events_.append(
-                    events.OrganizationUpdated(org_name, git_host.NAME)
-                )
             else:
                 organization = models.Organization(
                     name=data["name"],
@@ -48,9 +44,7 @@ def pull_organization_data(
                     private_repos=data["private_repos"],
                     public_repos=data["public_repos"],
                 )
-                events_.append(
-                    events.OrganizationPulled(org_name, git_host.NAME)
-                )
+            events_.append(events.OrganizationUpdated(org_name, git_host))
             session.add(organization)
             session.commit()
     return events_
@@ -62,9 +56,7 @@ async def pull_repos_data(
     events_ = []
     with get_session() as session:
         organization = _get_organization(
-            session,
-            org_name=org_name,
-            git_host=git_host.NAME
+            session, org_name=org_name, git_host=git_host.NAME
         )
         if organization is None:
             raise MissingDataError(
@@ -80,8 +72,7 @@ async def pull_repos_data(
             if forbidden:
                 events_.append(
                     events.ReposListAccessForbidden(
-                        org_name=org_name,
-                        git_host=git_host.NAME
+                        org_name=org_name, git_host=git_host
                     )
                 )
             repo_names_to_remove = {
@@ -93,8 +84,8 @@ async def pull_repos_data(
                 repo_name
                 for repo_name in data
                 if repo_name in organization.repos
-                and organization.repos[repo_name].updated_at <
-                data[repo_name]["updated_at"]
+                and organization.repos[repo_name].updated_at
+                < data[repo_name]["updated_at"]
             }
             repo_names_to_insert = {
                 repo_name
@@ -125,8 +116,8 @@ async def pull_repos_data(
                 for repo_name in data
                 if repo_name in organization.repos
                 and data.get(repo_name, [None, None])[0] is not None
-                and organization.repos[repo_name].updated_at <
-                data[repo_name][0]["updated_at"]
+                and organization.repos[repo_name].updated_at
+                < data[repo_name][0]["updated_at"]
             }
             repo_names_to_insert = {
                 repo_name
@@ -137,13 +128,13 @@ async def pull_repos_data(
             if repo_names_not_found:
                 events_.append(
                     events.ReposNotFound(
-                        repo_names_not_found, org_name, git_host.NAME
+                        repo_names_not_found, org_name, git_host
                     )
                 )
             if repo_names_access_rejected:
                 events_.append(
                     events.ReposAccessForbidden(
-                        repo_names_access_rejected, org_name, git_host.NAME
+                        repo_names_access_rejected, org_name, git_host
                     )
                 )
         if repo_names_to_insert:
@@ -156,18 +147,13 @@ async def pull_repos_data(
                         "created_at": item["created_at"],
                         "updated_at": item["updated_at"],
                         "html_url": item["html_url"],
-                        "api_url": item["api_url"]
+                        "api_url": item["api_url"],
                     }
                     for item, _ in [
                         data.get(repo_name)
                         for repo_name in repo_names_to_insert
                     ]
-                ]
-            )
-            events_.append(
-                events.ReposPulled(
-                    repo_names_to_insert, org_name, git_host.NAME
-                )
+                ],
             )
         if repo_names_to_remove:
             session.execute(
@@ -179,9 +165,7 @@ async def pull_repos_data(
                 )
             )
             events_.append(
-                events.ReposRemoved(
-                    repo_names_to_remove, org_name, git_host.NAME
-                )
+                events.ReposRemoved(repo_names_to_remove, org_name, git_host)
             )
         if repo_names_to_update:
             session.execute(
@@ -199,9 +183,12 @@ async def pull_repos_data(
                     ]
                 ],
             )
+        if repo_names_to_insert or repo_names_to_update:
             events_.append(
                 events.ReposUpdated(
-                    repo_names_to_update, org_name, git_host.NAME
+                    repo_names=repo_names_to_update | repo_names_to_insert,
+                    org_name=org_name,
+                    git_host=git_host,
                 )
             )
 
@@ -212,11 +199,10 @@ async def pull_repos_data(
 async def pull_repo_dependencies(
     git_host: GitHost, org_name: str, repo_names: Iterable[str]
 ):
+    events_ = []
     with get_session() as session:
         organization = _get_organization(
-            session,
-            org_name=org_name,
-            git_host=git_host.NAME
+            session, org_name=org_name, git_host=git_host.NAME
         )
         if organization is None:
             raise MissingDataError(
@@ -225,8 +211,56 @@ async def pull_repo_dependencies(
             )
         data = await git_host.get_files_from_repos(
             org_name=org_name,
-            repo_names=repo_names or organization.repos.keys(),
-            file_paths=["poetry.lock"]
+            repo_names=repo_names,
+            file_paths=["poetry.lock"],
         )
-    return []
-            
+        created_deps = {}
+        repo_names_access_forbidden = []
+        repo_names_dependency_updated = []
+        for repo_name, (content, status_code) in data.get(
+            "poetry.lock", {}
+        ).items():
+            dependency_updated = False
+            if status_code == 403:
+                repo_names_access_forbidden.append(repo_name)
+            elif status_code == 200:
+                parser = PoetryLockParser(content.decode("utf-8"))
+                deps = parser.get_dependencies()
+                repo_deps = organization.repos[repo_name].dependencies
+                for dep in deps.values():
+                    if ("python", dep["name"]) not in repo_deps or repo_deps[
+                        ("python", dep["name"])
+                    ].version != dep["version"]:
+                        dep_key = ("python", dep["name"], dep["version"])
+                        if dep_key not in created_deps:
+                            new_dep = models.Dependency(
+                                language="python",
+                                name=dep["name"],
+                                version=dep["version"],
+                            )
+                            created_deps[dep_key] = new_dep
+                        repo_deps[("python", dep["name"])] = created_deps[
+                            dep_key
+                        ]
+                        dependency_updated = True
+                if dependency_updated:
+                    repo_names_dependency_updated.append(repo_name)
+        if repo_names_access_forbidden:
+            events_.append(
+                events.ReposFileAccessForbidden(
+                    repo_names=repo_names_access_forbidden,
+                    org_name=org_name,
+                    git_host=git_host,
+                    file_path="poetry.lock",
+                )
+            )
+        if repo_names_dependency_updated:
+            events_.append(
+                events.ReposDependenciesUpdated(
+                    repo_names=repo_names_dependency_updated,
+                    org_name=org_name,
+                    git_host=git_host,
+                )
+            )
+        session.commit()
+    return events_

@@ -6,6 +6,7 @@ from sqlalchemy.orm import (
     Mapped,
     attribute_mapped_collection,
     declarative_base,
+    keyfunc_mapping,
     mapped_column,
     relationship,
 )
@@ -35,10 +36,8 @@ class Organization(Base):
         collection_class=attribute_mapped_collection("name"),
         cascade="all, delete-orphan",
     )
-    
-    __table_args__ = (
-        UniqueConstraint(name, git_host),
-    )
+
+    __table_args__ = (UniqueConstraint(name, git_host),)
 
     @property
     def repos_count(self):
@@ -59,55 +58,45 @@ class Repo(Base):
     updated_at: Mapped[datetime] = mapped_column()
     html_url: Mapped[str] = mapped_column(String(512))
     api_url: Mapped[str] = mapped_column(String(512))
-    
-    dependencies: Mapped[
-        dict[tuple[str, str, str], "Dependency"]
-    ] = relationship(
+
+    dependencies: Mapped[dict[tuple[str, str], "Dependency"]] = relationship(
         secondary="repo_dependency",
         back_populates="repos",
-        collection_class=attribute_mapped_collection("key")
+        collection_class=keyfunc_mapping(lambda e: (e.language, e.name)),
     )
 
-    __table_args__ = (
-        UniqueConstraint(name, org_id),
-    )
-    
+    __table_args__ = (UniqueConstraint(name, org_id),)
+
     @property
-    def key(self):
-        return self.org_id, self.name
+    def key(self) -> tuple[int, str]:
+        return (self.org_id, self.name)
 
 
 class Dependency(Base):
     __tablename__ = "dependency"
-    
+
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(256))
     version: Mapped[str] = mapped_column(String(32))
     language: Mapped[str] = mapped_column(String(128))
-    
-    repos: Mapped[
-        dict[tuple[int, str], "Repo"]
-    ] = relationship(
+
+    repos: Mapped[dict[tuple[int, str], "Repo"]] = relationship(
         secondary="repo_dependency",
         back_populates="dependencies",
-        collection_class=attribute_mapped_collection("key")
+        collection_class=keyfunc_mapping(lambda e: (e.org_id, e.name)),
     )
-    
-    __table_args__ = (
-        UniqueConstraint(name, version, language),
-    )
-    
+
+    __table_args__ = (UniqueConstraint(name, version, language),)
+
     @property
-    def key(self) -> tuple[str, str, str]:
-        return self.language, self.name, self.version
-    
-    
+    def key(self) -> tuple[str, str]:
+        return (self.language, self.name)
+
+
 class RepoDependency(Base):
     __tablename__ = "repo_dependency"
-    
+
     repo_id: Mapped[int] = mapped_column(ForeignKey(Repo.id), primary_key=True)
     dependency_id: Mapped[int] = mapped_column(
         ForeignKey(Dependency.id), primary_key=True
     )
-    
-    
