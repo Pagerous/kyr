@@ -214,7 +214,15 @@ async def pull_repo_dependencies(
             repo_names=repo_names,
             file_paths=["poetry.lock"],
         )
-        created_deps = {}
+        existing_python_deps = session.scalars(
+            select(models.Dependency).where(
+                models.Dependency.language == "python"
+            )
+        )
+        existing_deps = {
+            (dep.language, dep.name, dep.version): dep
+            for dep in existing_python_deps
+        }
         repo_names_access_forbidden = []
         repo_names_dependency_updated = []
         for repo_name, (content, status_code) in data.get(
@@ -232,14 +240,14 @@ async def pull_repo_dependencies(
                         ("python", dep["name"])
                     ].version != dep["version"]:
                         dep_key = ("python", dep["name"], dep["version"])
-                        if dep_key not in created_deps:
+                        if dep_key not in existing_deps:
                             new_dep = models.Dependency(
                                 language="python",
                                 name=dep["name"],
                                 version=dep["version"],
                             )
-                            created_deps[dep_key] = new_dep
-                        repo_deps[("python", dep["name"])] = created_deps[
+                            existing_deps[dep_key] = new_dep
+                        repo_deps[("python", dep["name"])] = existing_deps[
                             dep_key
                         ]
                         dependency_updated = True

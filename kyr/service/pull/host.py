@@ -98,19 +98,22 @@ class GitHub(GitHost):
                 elif status_code == 403:
                     forbidden = True
         return {
-            repo_name: {
-                "name": response["name"],
-                "org_name": org_name,
-                "git_host": "github",
-                "created_at": datetime.fromisoformat(
-                    response["created_at"]
-                ).replace(tzinfo=None),
-                "updated_at": datetime.fromisoformat(
-                    response["updated_at"]
-                ).replace(tzinfo=None),
-                "html_url": response["html_url"],
-                "api_url": response["url"],
-            }
+            repo_name: (
+                {
+                    "name": response["name"],
+                    "org_name": org_name,
+                    "git_host": "github",
+                    "created_at": datetime.fromisoformat(
+                        response["created_at"]
+                    ).replace(tzinfo=None),
+                    "updated_at": datetime.fromisoformat(
+                        response["updated_at"]
+                    ).replace(tzinfo=None),
+                    "html_url": response["html_url"],
+                    "api_url": response["url"],
+                },
+                200,
+            )
             for repo_name, response in result
         }, forbidden
 

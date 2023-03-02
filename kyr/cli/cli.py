@@ -1,6 +1,7 @@
 import click
 
 from kyr.cli.commands.pull import pull
+from kyr.cli.commands.show import show
 
 
 @click.group()
@@ -10,6 +11,7 @@ def cli(ctx):
 
 
 cli.add_command(pull)
+cli.add_command(show)
 
 
 if __name__ == "__main__":
