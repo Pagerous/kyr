@@ -97,12 +97,8 @@ class GitHub(GitHost):
             for response, status_code in task_results:
                 if status_code == 403:
                     forbidden = True
-                    break
                 elif status_code == 200 and len(response) > 0:
                     result.update({item["name"]: item for item in response})
-        
-            if forbidden:
-                return None, forbidden
             
             tasks = []
             for repo_name in result:
@@ -116,13 +112,10 @@ class GitHub(GitHost):
             task_results = await asyncio.gather(*tasks)
             for last_commit_at, status_code, repo_name in task_results:
                 if status_code == 403:
+                    result.pop(repo_name)
                     forbidden = True
-                    break
                 elif status_code == 200:
                     result[repo_name]["last_commit_at"] = last_commit_at
-                
-        if forbidden:
-            return None, forbidden
             
         return {
             repo_name: (
