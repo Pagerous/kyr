@@ -15,7 +15,9 @@ class GitHost(abc.ABC):
     NAME = "git_host"
 
     @abc.abstractmethod
-    def get_organization_data(self, org_name: str) -> OrganizationSchema:
+    def get_organization_data(
+        self, org_name: str
+    ) -> tuple[OrganizationSchema, int]:
         pass
 
     @abc.abstractmethod
@@ -23,7 +25,7 @@ class GitHost(abc.ABC):
         self,
         org_name: str,
         repos_count: int,
-    ) -> dict[str, RepoSchema]:
+    ) -> tuple[dict[str, RepoSchema] | None, bool]:
         pass
 
     @abc.abstractmethod
@@ -78,8 +80,8 @@ class GitHub(GitHost):
         self,
         org_name: str,
         repos_count: int,
-    ) -> tuple[dict[str, RepoSchema], bool]:
-        result = []
+    ) -> tuple[dict[str, RepoSchema] | None, bool]:
+        result = {}
         forbidden = False
         async with aiohttp.ClientSession() as session:
             tasks = []
@@ -93,10 +95,35 @@ class GitHub(GitHost):
                 )
             task_results = await asyncio.gather(*tasks)
             for response, status_code in task_results:
-                if status_code == 200 and len(response) > 0:
-                    result.extend([(item["name"], item) for item in response])
-                elif status_code == 403:
+                if status_code == 403:
                     forbidden = True
+                    break
+                elif status_code == 200 and len(response) > 0:
+                    result.update({item["name"]: item for item in response})
+        
+            if forbidden:
+                return None, forbidden
+            
+            tasks = []
+            for repo_name in result:
+                tasks.append(
+                    asyncio.create_task(
+                        self._get_repo_last_commit_date(
+                            session, org_name, repo_name
+                        )
+                    )
+                )
+            task_results = await asyncio.gather(*tasks)
+            for last_commit_at, status_code, repo_name in task_results:
+                if status_code == 403:
+                    forbidden = True
+                    break
+                elif status_code == 200:
+                    result[repo_name]["last_commit_at"] = last_commit_at
+                
+        if forbidden:
+            return None, forbidden
+            
         return {
             repo_name: (
                 {
@@ -106,15 +133,15 @@ class GitHub(GitHost):
                     "created_at": datetime.fromisoformat(
                         response["created_at"]
                     ).replace(tzinfo=None),
-                    "updated_at": datetime.fromisoformat(
-                        response["updated_at"]
+                    "last_commit_at": datetime.fromisoformat(
+                        response["last_commit_at"]
                     ).replace(tzinfo=None),
                     "html_url": response["html_url"],
                     "api_url": response["url"],
                 },
                 200,
             )
-            for repo_name, response in result
+            for repo_name, response in result.items()
         }, forbidden
 
     async def get_repos_data_by_name(
@@ -122,7 +149,7 @@ class GitHub(GitHost):
         org_name,
         repo_names: Iterable[str],
     ) -> dict[str, tuple[RepoSchema | None, int]]:
-        result = []
+        result = {}
         async with aiohttp.ClientSession() as session:
             tasks = []
             for repo_name in repo_names:
@@ -133,7 +160,25 @@ class GitHub(GitHost):
                 )
             task_results = await asyncio.gather(*tasks)
             for response, status_code, repo_name in task_results:
-                result.append((repo_name, status_code, response))
+                result[repo_name] = [response, status_code]
+            
+            tasks = []
+            for repo_name, (_, status_code) in result.items():
+                if status_code == 200:
+                    tasks.append(
+                        asyncio.create_task(
+                            self._get_repo_last_commit_date(
+                                session, org_name, repo_name
+                            )
+                        )
+                    )
+            task_results = await asyncio.gather(*tasks)
+            for last_commit_at, status_code, repo_name in task_results:
+                if status_code == 403:
+                    result[repo_name] = [None, status_code, None]
+                elif status_code == 200:
+                    result[repo_name].append(last_commit_at)
+                
         return {
             repo_name: (
                 {
@@ -143,8 +188,8 @@ class GitHub(GitHost):
                     "created_at": datetime.fromisoformat(
                         response["created_at"]
                     ).replace(tzinfo=None),
-                    "updated_at": datetime.fromisoformat(
-                        response["updated_at"]
+                    "last_commit_at": datetime.fromisoformat(
+                        last_commit_at
                     ).replace(tzinfo=None),
                     "html_url": response["html_url"],
                     "api_url": response["url"],
@@ -153,7 +198,10 @@ class GitHub(GitHost):
             )
             if response is not None
             else (None, status_code)
-            for repo_name, status_code, response in result
+            for (
+                repo_name,
+                (response, status_code, last_commit_at)
+            ) in result.items()
         }
 
     async def _get_repos_data(
@@ -184,6 +232,20 @@ class GitHub(GitHost):
             else:
                 data = await response.json()
             return data, response.status, repo_name
+        
+    async def _get_repo_last_commit_date(
+        self, session, org_name: str, repo_name: str
+    ) -> tuple[str | None, int, str]:
+        async with session.get(
+            self._get_url(f"repos/{org_name}/{repo_name}/commits"),
+            headers=self._get_headers(),
+        ) as response:
+            if response.status != 200:
+                last_commit_at = None
+            else:
+                body = await response.json()
+                last_commit_at = body[0]["commit"]["committer"]["date"]
+            return last_commit_at, response.status, repo_name
 
     async def get_files_from_repos(
         self,

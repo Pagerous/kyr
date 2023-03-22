@@ -1,6 +1,6 @@
 from typing import Iterable
 
-from sqlalchemy import and_, delete, insert, select, update
+from sqlalchemy import select
 
 from kyr.infrastructure.db import models
 from kyr.infrastructure.db.session import get_session
@@ -8,16 +8,6 @@ from kyr.service import events
 from kyr.service.exceptions import MissingDataError
 from kyr.service.parsers import PoetryLockParser
 from kyr.service.pull.host import GitHost
-
-
-def _get_organization(
-    session, org_name: str, git_host: str
-) -> models.Organization | None:
-    return session.scalar(
-        select(models.Organization)
-        .where(models.Organization.name == org_name)
-        .where(models.Organization.git_host == git_host)
-    )
 
 
 def pull_organization_data(
@@ -31,8 +21,8 @@ def pull_organization_data(
         )
     else:
         with get_session() as session:
-            organization = _get_organization(
-                session, org_name=data["name"], git_host=data["git_host"]
+            organization = models.Organization.get(
+                session, org_name=data["name"], git_host_name=data["git_host"]
             )
             if organization is not None:
                 organization.private_repos = data["private_repos"]
@@ -55,8 +45,8 @@ async def pull_repos_data(
 ):
     events_ = []
     with get_session() as session:
-        organization = _get_organization(
-            session, org_name=org_name, git_host=git_host.NAME
+        organization = models.Organization.get(
+            session, org_name=org_name, git_host_name=git_host.NAME
         )
         if organization is None:
             raise MissingDataError(
@@ -75,23 +65,24 @@ async def pull_repos_data(
                         org_name=org_name, git_host=git_host
                     )
                 )
-            repo_names_to_remove = {
-                repo_name
-                for repo_name in organization.repos
-                if repo_name not in data
-            }
-            repo_names_to_update = {
-                repo_name
-                for repo_name in data
-                if repo_name in organization.repos
-                and organization.repos[repo_name].updated_at
-                < data[repo_name]["updated_at"]
-            }
-            repo_names_to_insert = {
-                repo_name
-                for repo_name in data
-                if repo_name not in organization.repos
-            }
+            else:
+                repo_names_to_remove = {
+                    repo_name
+                    for repo_name in organization.repos
+                    if repo_name not in data
+                }
+                repo_names_to_update = {
+                    repo_name
+                    for repo_name in data
+                    if repo_name in organization.repos
+                    and organization.repos[repo_name].last_commit_at
+                    < data[repo_name]["last_commit_at"]
+                }
+                repo_names_to_insert = {
+                    repo_name
+                    for repo_name in data
+                    if repo_name not in organization.repos
+                }
         else:
             data = await git_host.get_repos_data_by_name(
                 org_name=org_name, repo_names=repo_names
@@ -113,17 +104,17 @@ async def pull_repos_data(
             }
             repo_names_to_update = {
                 repo_name
-                for repo_name in data
+                for repo_name, (repo_data, _) in data.items()
                 if repo_name in organization.repos
-                and data.get(repo_name, [None, None])[0] is not None
-                and organization.repos[repo_name].updated_at
-                < data[repo_name][0]["updated_at"]
+                and repo_data is not None
+                and organization.repos[repo_name].last_commit_at
+                < data[repo_name][0]["last_commit_at"]
             }
             repo_names_to_insert = {
                 repo_name
-                for repo_name in data
+                for repo_name, (repo_data, _) in data.items()
                 if repo_name not in organization.repos
-                and data.get(repo_name, [None, None])[0] is not None
+                and repo_data is not None
             }
             if repo_names_not_found:
                 events_.append(
@@ -138,14 +129,13 @@ async def pull_repos_data(
                     )
                 )
         if repo_names_to_insert:
-            session.execute(
-                insert(models.Repo),
-                [
+            organization.insert_repos(
+                session,
+                repos_data=[
                     {
                         "name": item["name"],
-                        "org_id": organization.id,
                         "created_at": item["created_at"],
-                        "updated_at": item["updated_at"],
+                        "last_commit_at": item["last_commit_at"],
                         "html_url": item["html_url"],
                         "api_url": item["api_url"],
                     }
@@ -153,35 +143,29 @@ async def pull_repos_data(
                         data.get(repo_name)
                         for repo_name in repo_names_to_insert
                     ]
-                ],
+                ]
             )
         if repo_names_to_remove:
-            session.execute(
-                delete(models.Repo).where(
-                    and_(
-                        models.Repo.name.in_(repo_names_to_remove),
-                        models.Repo.org_id == organization.id,
-                    )
-                )
-            )
+            organization.delete_repos(session, repo_names_to_remove)
             events_.append(
                 events.ReposRemoved(repo_names_to_remove, org_name, git_host)
             )
+            session.bulk_save_objects
         if repo_names_to_update:
-            session.execute(
-                update(models.Repo),
-                [
+            organization.update_repos(
+                session,
+                repos_data=[
                     {
-                        "id": repo_id,
-                        "updated_at": data_item["updated_at"],
-                        "html_url": data_item["html_url"],
-                        "api_url": data_item["api_url"],
+                        "name": item["name"],
+                        "last_commit_at": item["last_commit_at"],
+                        "html_url": item["html_url"],
+                        "api_url": item["api_url"]
                     }
-                    for repo_id, (data_item, _) in [
-                        (organization.repos[repo_name].id, data.get(repo_name))
+                    for item, _ in [
+                        data.get(repo_name)
                         for repo_name in repo_names_to_update
                     ]
-                ],
+                ]
             )
         if repo_names_to_insert or repo_names_to_update:
             events_.append(
@@ -191,7 +175,6 @@ async def pull_repos_data(
                     git_host=git_host,
                 )
             )
-
         session.commit()
     return events_
 
@@ -201,8 +184,8 @@ async def pull_repo_dependencies(
 ):
     events_ = []
     with get_session() as session:
-        organization = _get_organization(
-            session, org_name=org_name, git_host=git_host.NAME
+        organization = models.Organization.get(
+            session, org_name=org_name, git_host_name=git_host.NAME
         )
         if organization is None:
             raise MissingDataError(

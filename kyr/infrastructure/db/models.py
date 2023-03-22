@@ -1,7 +1,20 @@
+from __future__ import annotations
+
 from datetime import datetime
 from enum import StrEnum
+from typing import Iterable, TypedDict
 
-from sqlalchemy import Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import (
+    Enum,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    and_,
+    delete,
+    insert,
+    select,
+    update,
+)
 from sqlalchemy.orm import (
     Mapped,
     attribute_mapped_collection,
@@ -23,6 +36,22 @@ class GitHost(StrEnum):
 
 
 class Organization(Base):
+    
+    class RepoInsertData(TypedDict):
+        name: str
+        created_at: datetime
+        last_commit_at: datetime
+        html_url: str
+        api_url: str
+        
+    class RepoUpdateData(TypedDict):
+        name: str
+        last_commit_at: datetime
+        html_url: str
+        api_url: str
+        
+    
+    
     __tablename__ = "organization"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -42,6 +71,57 @@ class Organization(Base):
     @property
     def repos_count(self):
         return self.private_repos + self.public_repos
+    
+    @classmethod
+    def get(
+        cls, session, org_name: str, git_host_name: str
+    ) -> Organization | None:
+        return session.scalar(
+            select(cls)
+            .where(cls.name == org_name)
+            .where(cls.git_host == git_host_name)
+        )
+        
+    def delete_repos(self, session, repo_names: Iterable[str]):
+        session.execute(
+            delete(Repo).where(
+                and_(
+                    Repo.name.in_(repo_names),
+                    Repo.org_id == self.id,
+                )
+            )
+        )
+        
+    def insert_repos(self, session, repos_data: RepoInsertData):
+        session.execute(
+            insert(Repo),
+            [
+                {
+                    "name": item["name"],
+                    "org_id": self.id,
+                    "created_at": item["created_at"],
+                    "last_commit_at": item["last_commit_at"],
+                    "html_url": item["html_url"],
+                    "api_url": item["api_url"],
+                }
+                for item in repos_data
+            ],
+        )
+        
+    def update_repos(self, session, repos_data: Iterable[RepoUpdateData]):
+        session.execute(
+            update(Repo),
+            [
+                {
+                    "id": self.repos[data["name"]].id,
+                    "last_commit_at": data["last_commit_at"],
+                    "html_url": data["html_url"],
+                    "api_url": data["api_url"]
+                }
+                for data in repos_data
+            ]
+        )
+        
 
 
 class Repo(Base):
@@ -55,7 +135,7 @@ class Repo(Base):
         back_populates="repos",
     )
     created_at: Mapped[datetime] = mapped_column()
-    updated_at: Mapped[datetime] = mapped_column()
+    last_commit_at: Mapped[datetime] = mapped_column()
     html_url: Mapped[str] = mapped_column(String(512))
     api_url: Mapped[str] = mapped_column(String(512))
 
