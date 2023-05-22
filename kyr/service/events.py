@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from kyr.service.pull.host import GitHost
+from kyr.service.pull.host import GitHost, DataFetchFailReason
 
 
 @dataclass
@@ -15,55 +15,45 @@ class OrganizationUpdated(Event):
 
 
 @dataclass
-class OrganizationAccessForbidden(Event):
+class OrganizationPullFailed(Event):
     org_name: str
     git_host: GitHost
+    reason: DataFetchFailReason
 
 
 @dataclass
 class ReposUpdated(Event):
-    repo_names: list[str]
+    repo_names: set[str]
     org_name: str
     git_host: GitHost
 
 
 @dataclass
-class ReposRemoved(Event):
-    repo_names: list[str]
+class ReposListingPullFailed(Event):
     org_name: str
     git_host: GitHost
+    reason: DataFetchFailReason
 
 
 @dataclass
-class ReposNotFound(Event):
-    repo_names: list[str]
+class RepoPullFailed(Event):
+    repo_name: str
     org_name: str
     git_host: GitHost
+    reason: DataFetchFailReason
 
 
 @dataclass
-class ReposListAccessForbidden(Event):
-    org_name: str
-    git_host: GitHost
-
-
-@dataclass
-class ReposAccessForbidden(Event):
-    repo_names: list[str]
-    org_name: str
-    git_host: GitHost
-
-
-@dataclass
-class ReposFileAccessForbidden(Event):
-    repo_names: list[str]
+class RepoFilePullFailed(Event):
+    repo_name: str
     org_name: str
     git_host: GitHost
     file_path: str
+    reason: DataFetchFailReason
 
 
 @dataclass
 class ReposDependenciesUpdated(Event):
-    repo_names: list[str]
+    repo_names: set[str]
     org_name: str
     git_host: GitHost

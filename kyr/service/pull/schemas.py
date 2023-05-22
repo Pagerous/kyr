@@ -1,19 +1,33 @@
+from dataclasses import dataclass
 from datetime import datetime
-from typing import TypedDict
 
 
-class OrganizationSchema(TypedDict):
+@dataclass
+class Organization:
     name: str
     private_repos: int
     public_repos: int
-    git_host: str
 
 
-class RepoSchema(TypedDict):
+@dataclass
+class Repo:
     name: str
     org_name: str
-    git_host: str
     created_at: datetime
-    last_commit_at: datetime
+    updated_at: datetime
     html_url: str
     api_url: str
+    updated: bool
+    new: bool
+
+
+@dataclass
+class RepoFile:
+    repo_name: str
+    file_path: str
+    content: str
+
+
+@dataclass
+class RepoFull(Repo):
+    files: dict[str, RepoFile]

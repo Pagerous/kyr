@@ -6,9 +6,9 @@ import click
 
 from kyr.config import Config
 from kyr.service import commands
-from kyr.service import events
 from kyr.service import events as service_events
-from kyr.service.pull.host import GitHub
+from kyr.service.pull.host import GitHub, GitHubTokenManager, GitHubToken
+from kyr.service.pull import filters
 
 
 def coroutine(f):
@@ -19,18 +19,18 @@ def coroutine(f):
     return update_wrapper(wrapper, f)
 
 
-async def dispatch_events(events: Iterable[events.Event]):
+async def dispatch_events(events: Iterable[service_events.Event]):
     for event_ in events:
         if isinstance(event_, service_events.OrganizationUpdated):
             click.secho(
                 f"{event_.git_host.NAME.upper()}: Updated '{event_.org_name}'",
                 fg="green",
             )
-        elif isinstance(event_, service_events.ReposRemoved):
+        elif isinstance(event_, service_events.OrganizationPullFailed):
             click.secho(
-                f"{event_.git_host.NAME.upper()}: Removed "
-                f"{len(event_.repo_names)} repos in '{event_.org_name}'",
-                fg="yellow",
+                f"{event_.git_host.NAME.upper()}: Organization pull failed. "
+                f"Entire pull operation was canceled. Reason: {event_.reason}. ",
+                fg="red",
             )
         elif isinstance(event_, service_events.ReposUpdated):
             click.secho(
@@ -38,40 +38,22 @@ async def dispatch_events(events: Iterable[events.Event]):
                 f"{len(event_.repo_names)} repos in '{event_.org_name}'",
                 fg="green",
             )
-            await dispatch_events(
-                await commands.pull_repo_dependencies(
-                    git_host=event_.git_host,
-                    org_name=event_.org_name,
-                    repo_names=event_.repo_names,
-                )
-            )
-        elif isinstance(event_, service_events.ReposNotFound):
+        elif isinstance(event_, service_events.ReposListingPullFailed):
             click.secho(
-                f"{event_.git_host.NAME.upper()}: Repos "
-                f"{list(event_.repo_names)} in '{event_.org_name}' were not "
-                "found",
-                fg="yellow",
-            )
-        elif isinstance(event_, service_events.ReposAccessForbidden):
-            click.secho(
-                f"{event_.git_host.NAME.upper()}: Access in repos "
-                f"{list(event_.repo_names)} in '{event_.org_name}' "
-                "is forbidden. Ensure your access is still valid.",
+                f"{event_.git_host.NAME.upper()}: Repos listing operation failed. "
+                f"Entire pull operation was canceled. Reason: {event_.reason}. ",
                 fg="red",
             )
-        elif isinstance(event_, service_events.ReposListAccessForbidden):
+        elif isinstance(event_, service_events.RepoPullFailed):
             click.secho(
-                f"{event_.git_host.NAME.upper()}: Access for repos listing in "
-                f"'{event_.org_name}' is forbidden. Ensure your access is "
-                "still valid.",
+                f"{event_.git_host.NAME.upper()}: Repo '{event_.repo_name}' was not pull due to error. "
+                f"Reason: {event_.reason}. ",
                 fg="red",
             )
-        elif isinstance(event_, service_events.ReposFileAccessForbidden):
+        elif isinstance(event_, service_events.RepoFilePullFailed):
             click.secho(
-                f"{event_.git_host.NAME.upper()}: Access for file "
-                f"'{event_.file_path}' in repos {list(event_.repo_names)} "
-                f"in '{event_.org_name}' is forbidden. Ensure your access is "
-                f"still valid.",
+                f"{event_.git_host.NAME.upper()}: File '{event_.file_path}' from repo '{event_.repo_name}' "
+                f"was not pull due to error. Reason: {event_.reason}. ",
                 fg="red",
             )
         elif isinstance(event_, service_events.ReposDependenciesUpdated):
@@ -85,7 +67,9 @@ async def dispatch_events(events: Iterable[events.Event]):
 @click.group()
 @click.pass_context
 def pull(ctx: click.Context):
-    ctx.obj["GIT_HOST"] = GitHub(Config.get("github.token"))
+    ctx.obj["GIT_HOST"] = GitHub(
+        token_manager=GitHubTokenManager(tokens=[GitHubToken(Config.get("github.token"), last_expired=None)])
+    )
 
 
 @pull.command()
@@ -94,7 +78,7 @@ def pull(ctx: click.Context):
 @click.pass_context
 async def org(ctx: click.Context, org_name):
     await dispatch_events(
-        commands.pull_organization_data(
+        commands.pull_organization(
             git_host=ctx.obj.get("GIT_HOST"),
             org_name=org_name,
         )
@@ -104,13 +88,12 @@ async def org(ctx: click.Context, org_name):
 @pull.command()
 @coroutine
 @click.option("-o", "--org-name", type=str)
-@click.argument("repo_names", nargs=-1)
 @click.pass_context
-async def repos(ctx: click.Context, org_name: str, repo_names):
+async def repos(ctx: click.Context, org_name: str):
     await dispatch_events(
-        await commands.pull_repos_data(
+        await commands.pull_repos(
             git_host=ctx.obj.get("GIT_HOST"),
             org_name=org_name,
-            repo_names=repo_names,
+            filter_=filters.RepoFilter(filters.StartsWith("limepkg")),
         )
     )

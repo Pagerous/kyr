@@ -40,18 +40,16 @@ class Organization(Base):
     class RepoInsertData(TypedDict):
         name: str
         created_at: datetime
-        last_commit_at: datetime
+        updated_at: datetime
         html_url: str
         api_url: str
         
     class RepoUpdateData(TypedDict):
         name: str
-        last_commit_at: datetime
+        updated_at: datetime
         html_url: str
         api_url: str
-        
-    
-    
+
     __tablename__ = "organization"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -59,6 +57,7 @@ class Organization(Base):
     git_host: Mapped[GitHost] = mapped_column(Enum(GitHost))
     private_repos: Mapped[int] = mapped_column()
     public_repos: Mapped[int] = mapped_column()
+    system_pulled_at: Mapped[datetime] = mapped_column()
     repos: Mapped[dict[str, "Repo"]] = relationship(
         "Repo",
         back_populates="org",
@@ -82,46 +81,19 @@ class Organization(Base):
             .where(cls.git_host == git_host_name)
         )
         
-    def delete_repos(self, session, repo_names: Iterable[str]):
-        session.execute(
-            delete(Repo).where(
-                and_(
-                    Repo.name.in_(repo_names),
-                    Repo.org_id == self.id,
-                )
-            )
-        )
-        
-    def insert_repos(self, session, repos_data: RepoInsertData):
-        session.execute(
-            insert(Repo),
-            [
-                {
-                    "name": item["name"],
-                    "org_id": self.id,
-                    "created_at": item["created_at"],
-                    "last_commit_at": item["last_commit_at"],
-                    "html_url": item["html_url"],
-                    "api_url": item["api_url"],
-                }
-                for item in repos_data
-            ],
-        )
-        
     def update_repos(self, session, repos_data: Iterable[RepoUpdateData]):
         session.execute(
             update(Repo),
             [
                 {
                     "id": self.repos[data["name"]].id,
-                    "last_commit_at": data["last_commit_at"],
+                    "updated_at": data["updated_at"],
                     "html_url": data["html_url"],
                     "api_url": data["api_url"]
                 }
                 for data in repos_data
             ]
         )
-        
 
 
 class Repo(Base):
@@ -135,7 +107,8 @@ class Repo(Base):
         back_populates="repos",
     )
     created_at: Mapped[datetime] = mapped_column()
-    last_commit_at: Mapped[datetime] = mapped_column()
+    updated_at: Mapped[datetime] = mapped_column()
+    system_pulled_at: Mapped[datetime] = mapped_column()
     html_url: Mapped[str] = mapped_column(String(512))
     api_url: Mapped[str] = mapped_column(String(512))
 
@@ -149,7 +122,7 @@ class Repo(Base):
 
     @property
     def key(self) -> tuple[int, str]:
-        return (self.org_id, self.name)
+        return self.org_id, self.name
 
 
 class Dependency(Base):
@@ -170,7 +143,7 @@ class Dependency(Base):
 
     @property
     def key(self) -> tuple[str, str]:
-        return (self.language, self.name)
+        return self.language, self.name
 
 
 class RepoDependency(Base):
