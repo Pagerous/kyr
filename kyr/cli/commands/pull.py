@@ -1,5 +1,6 @@
 import asyncio
-from functools import update_wrapper
+import logging
+from functools import partial, update_wrapper
 from typing import Iterable
 
 import click
@@ -9,6 +10,10 @@ from kyr.service import commands
 from kyr.service import events as service_events
 from kyr.service.pull.host import GitHub, GitHubTokenManager, GitHubToken
 from kyr.service.pull import filters
+
+logging.basicConfig(level=logging.INFO)
+
+logger = logging.getLogger()
 
 
 def coroutine(f):
@@ -68,6 +73,7 @@ async def dispatch_events(events: Iterable[service_events.Event]):
 @click.pass_context
 def pull(ctx: click.Context):
     ctx.obj["GIT_HOST"] = GitHub(
+        logger=logger,
         token_manager=GitHubTokenManager(tokens=[GitHubToken(Config.get("github.token"), last_expired=None)])
     )
 
@@ -90,10 +96,20 @@ async def org(ctx: click.Context, org_name):
 @click.option("-o", "--org-name", type=str)
 @click.pass_context
 async def repos(ctx: click.Context, org_name: str):
-    await dispatch_events(
-        await commands.pull_repos(
+    with click.progressbar(show_percent=True, length=1) as bar:
+        events_ = await commands.pull_repos(
             git_host=ctx.obj.get("GIT_HOST"),
             org_name=org_name,
             filter_=filters.RepoFilter(filters.StartsWith("limepkg")),
+            n_repos_determined_callback=partial(_set_progress_bar_length, bar=bar),
+            repo_fetched_callback=partial(_repo_fetched, bar=bar),
         )
-    )
+        await dispatch_events(events_)
+
+
+def _set_progress_bar_length(n_repos, bar):
+    bar.length = n_repos
+
+
+def _repo_fetched(bar):
+    bar.update(1)

@@ -2,6 +2,7 @@ import abc
 import asyncio
 import base64
 import dataclasses
+from logging import Logger
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -124,7 +125,10 @@ class RepoResultMerger:
         repo_name = self._repo_result.repo_name
         org_name = self._repo_result.org_name
         for repo_file_result in self._repo_file_results.values():
-            if repo_file_result.repo_name != repo_name or repo_file_result.org_name != org_name:
+            if (
+                repo_file_result is not None and
+                (repo_file_result.repo_name != repo_name or repo_file_result.org_name != org_name)
+            ):
                 return False
         return True
 
@@ -144,12 +148,13 @@ class RepoResultMerger:
             files={}
         )
         succeed = self._repo_result.succeed
-        for file_result in self._repo_file_results.values():
-            if not file_result.succeed:
-                succeed = False
-                break
-            else:
-                merged_data.files[file_result.file_path] = dataclasses.replace(file_result.data)
+        if self._repo_result.data.new or self._repo_result.data.updated:
+            for file_result in self._repo_file_results.values():
+                if not file_result.succeed:
+                    succeed = False
+                    break
+                else:
+                    merged_data.files[file_result.file_path] = dataclasses.replace(file_result.data)
         return RepoFullResult(
             org_name=self._repo_result.org_name,
             repo_name=self._repo_result.org_name,
@@ -183,6 +188,7 @@ class GitHost(abc.ABC):
         repos_last_update: dict[str, datetime],
         file_paths: Iterable[str],
         filter_,
+        n_repos_determined_callback,
     ) -> Generator[DataFetchResult, None, None]:
         pass
 
@@ -280,6 +286,9 @@ class ReposListingRequest(DataFetchRequest):
         self._page_size = page_size
         self._filter = filter_
 
+    def __str__(self):
+        return f"{self.__class__.__name__}(org_name={self._org_name}, page={self._page}, page_size={self._page_size})"
+
     @property
     def url(self):
         return self._get_url(f"orgs/{self._org_name}/repos?page={self._page}&per_page={self._page_size}")
@@ -347,6 +356,15 @@ class RepoRequest(DataFetchRequest):
         self._org_name = org_name
         self._repo_name = repo_name
         self._repo_last_update = repo_last_update
+
+    def __str__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"org_name={self._org_name}, "
+            f"repo_name={self._repo_name}, "
+            f"repo_last_update={self._repo_last_update}"
+            ")"
+        )
 
     @property
     def url(self):
@@ -441,6 +459,15 @@ class RepoFileRequest(DataFetchRequest):
         self._repo_name = repo_name
         self._file_path = file_path
 
+    def __str__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"org_name={self._org_name}, "
+            f"repo_name={self._repo_name}, "
+            f"file_path={self._file_path}"
+            ")"
+        )
+
     @property
     def url(self):
         return self._get_url(f"repos/{self._org_name}/{self._repo_name}/contents/{self._file_path}")
@@ -508,6 +535,13 @@ class OrganizationRequest(DataFetchRequest):
         super().__init__(token_manager=token_manager)
         self._org_name = org_name
 
+    def __str__(self):
+        return (
+            f"{self.__class__.__name__}("
+            f"org_name={self._org_name}"
+            ")"
+        )
+
     @property
     def url(self):
         return self._get_url(f"orgs/{self._org_name}")
@@ -564,9 +598,10 @@ class GitHub(GitHost):
     NAME = "github"
     BASE_URL = "https://api.github.com"
 
-    def __init__(self, token_manager: GitHubTokenManager):
+    def __init__(self, logger: Logger, token_manager: GitHubTokenManager):
         self._token_manager = token_manager
         self._requests_processing = set()
+        self._logger = logger
 
     def get_organization(self, org_name: str) -> OrganizationResult:
         request = OrganizationRequest(token_manager=self._token_manager, org_name=org_name)
@@ -584,6 +619,7 @@ class GitHub(GitHost):
         repos_last_update: dict[str, datetime],
         file_paths: Collection[str],
         filter_: RepoFilter,
+        n_repos_determined_callback,
     ) -> Generator[DataFetchResult, None, None]:
         request_q = asyncio.Queue()
         result_q = asyncio.Queue()
@@ -593,6 +629,7 @@ class GitHub(GitHost):
         else:
             tasks = []
             repos_count = organization.data.private_repos + organization.data.public_repos
+            n_repos_determined_callback(repos_count)
             async with aiohttp.ClientSession() as session:
                 if isinstance(name_filter := filter_.get_filter("name"), In):
                     for repo_name in name_filter.value:
@@ -618,7 +655,9 @@ class GitHub(GitHost):
                                 page_size=page_size,
                             )
                         )
-                for _ in range(self._get_repo_workers(n_files=len(file_paths), filter_=filter_)):
+                n_repo_workers = self._get_repo_workers(n_files=len(file_paths), filter_=filter_)
+                self._logger.debug(f"{n_repo_workers} workers are delegated for fetching repo data")
+                for _ in range(n_repo_workers):
                     tasks.append(
                         asyncio.create_task(
                             self._handle_repo_requests(
@@ -656,11 +695,14 @@ class GitHub(GitHost):
         while True:
             if request_q.empty() and result_q.empty():
                 if not self._requests_processing:
+                    self._logger.debug("assuming all requests are processed, breaking loop")
                     break
                 else:
+                    self._logger.debug("waiting for requests to be processed")
                     await asyncio.sleep(0.5)
             else:
                 result = await result_q.get()
+                self._logger.debug(f"received result {id(result)}")
                 if isinstance(result, RepoResult):
                     if result.repo_name not in result_mergers:
                         result_mergers[result.repo_name] = RepoResultMerger(file_paths)
@@ -669,14 +711,17 @@ class GitHub(GitHost):
                     if merged_result is not None:
                         result_mergers.pop(result.repo_name)
                         result_q.put_nowait(merged_result)
+                        self._logger.debug(f"gathered full repo result {id(merged_result)}, yielding")
                         yield merged_result
                 elif isinstance(result, ReposListingResult):
+                    self._logger.debug(f"yielding {id(result)}")
                     yield result
                 result_q.task_done()
         for merger in result_mergers.values():
             merged_result = merger.get_merged_result()
             if merged_result is None:
                 raise InconsistentResultsError("some results are missing")
+            self._logger.debug(f"yielding {id(merged_result)}")
             yield merged_result
 
     async def _handle_repo_requests(
@@ -689,6 +734,7 @@ class GitHub(GitHost):
     ) -> None:
         while True:
             request: DataFetchRequest = await request_q.get()
+            self._logger.debug(f"received request {request}")
             self._requests_processing.add(id(request))
             result, requests_ = await request.make_with_aiohttp(
                 session=session,
@@ -696,9 +742,12 @@ class GitHub(GitHost):
                 repos_last_update=repos_last_update
             )
             if result is not None:
+                self._logger.debug(f"request {request} returned result {id(result)}")
                 result_q.put_nowait(result)
             if requests_:
+                self._logger.debug(f"request {request} returned following requests {requests_}")
                 for next_request in requests_:
                     request_q.put_nowait(next_request)
             self._requests_processing.remove(id(request))
+            self._logger.debug(f"finished processing request {request}")
             request_q.task_done()

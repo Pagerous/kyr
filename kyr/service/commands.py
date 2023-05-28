@@ -51,7 +51,7 @@ def pull_organization(
 
 
 async def pull_repos(
-    git_host: GitHost, org_name: str, filter_: RepoFilter,
+    git_host: GitHost, org_name: str, filter_: RepoFilter, n_repos_determined_callback, repo_fetched_callback
 ):
     events_ = []
     with get_session() as session:
@@ -80,7 +80,12 @@ async def pull_repos(
         broken_fetch = False
         result: DataFetchResult
         async for result in git_host.get_repos(  # noqa
-                org_name=org_name, repos_last_update=repos_last_update, file_paths=["poetry.lock"], filter_=filter_):
+                org_name=org_name,
+            repos_last_update=repos_last_update,
+            file_paths=["poetry.lock"],
+            filter_=filter_,
+            n_repos_determined_callback=n_repos_determined_callback,
+        ):
             if isinstance(result, OrganizationResult):
                 if not result.succeed:
                     events_.append(
@@ -104,6 +109,7 @@ async def pull_repos(
                     broken_fetch = True
                     break
             elif isinstance(result, RepoFullResult):
+                repo_fetched_callback()
                 if not result.succeed:
                     skip_failed = False
                     for file_result in result.file_results:

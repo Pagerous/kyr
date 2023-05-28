@@ -35,10 +35,10 @@ class _Filter(abc.ABC):
     def value(self):
         pass
 
-    def __rand__(self, other: Matchable) -> '_And':
+    def __and__(self, other: Matchable) -> '_And':
         return _And(self, other)
 
-    def __ror__(self, other: Matchable) -> '_Or':
+    def __or__(self, other: Matchable) -> '_Or':
         return _Or(self, other)
 
 
